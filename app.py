@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import time
 
 import streamlit as st
 import pandas as pd
@@ -7,6 +8,15 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from inference_improved_model import ImprovedModelInference
+from streamlit_option_menu import option_menu
+
+# Page configuration
+st.set_page_config(
+    page_title="MediVault AI",
+    page_icon="🩺",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -105,6 +115,41 @@ def load_data():
         precautions[disease] = values
     return symptoms, precautions
 
+def get_top_predictions(model, selected_symptoms, all_symptoms, le_clf, top_k=3):
+    """Get top-K predictions with probabilities."""
+    if isinstance(model, ImprovedModelInference):
+        return model.get_top_predictions(selected_symptoms, all_symptoms, top_k)
+    else:
+        # For legacy model, approximate top predictions
+        input_vector = preprocess_input(selected_symptoms, all_symptoms)
+        probas = model.predict_proba([input_vector])[0]
+        top_indices = np.argsort(probas)[::-1][:top_k]
+        results = []
+        for idx in top_indices:
+            disease = le_clf.inverse_transform([idx])[0]
+            prob = float(probas[idx])
+            results.append((disease, prob))
+        return results
+
+def calculate_health_risk_score(confidence):
+    """Calculate health risk score based on confidence."""
+    # Higher confidence = lower risk (more certain diagnosis)
+    risk_score = max(0, 100 - confidence)
+    if risk_score < 30:
+        level = "Low Risk"
+    elif risk_score < 70:
+        level = "Medium Risk"
+    else:
+        level = "High Risk"
+    return risk_score, level
+
+def generate_ai_reasoning(selected_symptoms, predicted_disease):
+    """Generate human-readable AI reasoning."""
+    symptom_text = ", ".join(selected_symptoms[:3])  # Show first 3
+    if len(selected_symptoms) > 3:
+        symptom_text += f" and {len(selected_symptoms) - 3} more"
+    return f"Based on your symptoms ({symptom_text}), the AI model identified patterns consistent with {predicted_disease}."
+
 def preprocess_input(symptoms_list, all_symptoms):
     """Create feature vector from selected symptoms."""
     input_vector = np.zeros(len(all_symptoms))
@@ -187,106 +232,317 @@ def predict_progression(reg_model, disease, le_clf, scaler_reg):
 clf_model, reg_model, le_clf, scaler_reg = load_models()
 symptoms, precautions = load_data()
 
-# Styled header
-st.markdown(
-    "<div style='text-align: center; padding: 20px; color: #0a3161; font-size:32px; font-weight:700;'>🩺 AI Health Diagnosis System</div>",
-    unsafe_allow_html=True,
+# Custom CSS for modern UI
+st.markdown("""
+<style>
+    .main {
+        background: linear-gradient(135deg, #0e1117 0%, #1a1a2e 100%);
+        color: #ffffff;
+    }
+    .stButton>button {
+        background: linear-gradient(135deg, #1f77b4 0%, #0056b3 100%);
+        color: white;
+        border-radius: 12px;
+        border: none;
+        padding: 12px 24px;
+        font-size: 16px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 15px rgba(31, 119, 180, 0.3);
+    }
+    .glass-card {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        border-radius: 20px;
+        padding: 25px;
+        margin: 15px 0;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+    .diagnosis-card {
+        background: linear-gradient(135deg, rgba(31, 119, 180, 0.8) 0%, rgba(0, 86, 179, 0.8) 100%);
+        backdrop-filter: blur(15px);
+        border-radius: 25px;
+        padding: 30px;
+        margin: 20px 0;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 0 12px 40px rgba(31, 119, 180, 0.4);
+        text-align: center;
+    }
+    .metric-card {
+        background: rgba(46, 46, 46, 0.8);
+        backdrop-filter: blur(5px);
+        border-radius: 15px;
+        padding: 20px;
+        margin: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+    }
+    .footer {
+        text-align: center;
+        padding: 25px;
+        color: #888;
+        font-size: 14px;
+        background: rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(5px);
+        border-radius: 10px;
+        margin-top: 30px;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 50px;
+        color: #cccccc;
+        font-size: 18px;
+    }
+    .progress-bar {
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.2);
+        overflow: hidden;
+    }
+    .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #1f77b4, #00d4aa);
+        border-radius: 4px;
+        transition: width 1s ease-in-out;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown("""
+<div style='text-align: center; padding: 20px;'>
+    <h1 style='color: #1f77b4; font-size: 48px; margin: 0;'>🩺 MediVault AI</h1>
+    <p style='color: #cccccc; font-size: 18px; margin: 5px 0;'>Smart Disease Prediction System</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Navigation Menu
+selected = option_menu(
+    menu_title=None,
+    options=["Home", "Prediction", "Insights", "About"],
+    icons=["house", "search", "bar-chart", "info-circle"],
+    menu_icon="cast",
+    default_index=1,
+    orientation="horizontal",
+    styles={
+        "container": {"padding": "0!important", "background-color": "#0e1117"},
+        "icon": {"color": "#1f77b4", "font-size": "18px"},
+        "nav-link": {
+            "font-size": "16px",
+            "text-align": "center",
+            "margin": "0px",
+            "--hover-color": "#2e2e2e",
+        },
+        "nav-link-selected": {"background-color": "#1f77b4"},
+    }
 )
 
-# Sidebar
-st.sidebar.header("ℹ️ About")
-st.sidebar.write(
-    "This AI system predicts diseases based on symptoms using Random Forest classification and estimates disease progression stages using regression models."
-)
+# Content based on navigation
+if selected == "Home":
+    st.markdown("""
+    <div class='glass-card'>
+        <h2 style='text-align: center; color: #1f77b4;'>Welcome to MediVault AI</h2>
+        <p style='text-align: center; font-size: 18px; line-height: 1.6;'>
+            Our advanced AI system helps predict diseases based on your symptoms and provides valuable insights for better health management.
+        </p>
+        <div style='text-align: center; margin-top: 30px;'>
+            <p style='font-size: 16px; color: #cccccc;'>Navigate using the menu above to start predicting or explore insights.</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-st.sidebar.header("🔍 How it Works")
-st.sidebar.write(
-    "1. Select symptoms you're experiencing.\n2. Click 'Predict Disease' to get results.\n3. View predicted disease, confidence, progression stage, and precautions."
-)
-
-st.sidebar.header("📊 Model Info")
-st.sidebar.write(f"- **Classification:** Random Forest ({len(symptoms)} symptoms)")
-st.sidebar.write("- **Regression:** Random Forest Regressor")
-st.sidebar.write(f"- **Total Symptoms:** {len(symptoms)}")
-
-st.sidebar.success("✅ System Ready")
-st.sidebar.warning("⚠️ This system is for educational purposes only. Consult a doctor.")
-
-# Tabs
-tab1, tab2 = st.tabs(["🔮 Prediction", "📈 Insights"])
-
-with tab1:
-    st.subheader("Select Your Symptoms")
-    selected_symptoms = st.multiselect("Choose symptoms you are experiencing:", symptoms, key="symptoms")
-
-    if selected_symptoms:
-        st.markdown("**Selected Symptoms:**")
-        st.write(selected_symptoms)
-    else:
-        st.info("Select symptoms from the list to begin prediction.")
-
-    st.write("")
+elif selected == "Prediction":
+    st.markdown("## 🔮 Disease Prediction")
+    
+    with st.expander("🧾 Select Your Symptoms", expanded=True):
+        selected_symptoms = st.multiselect("Choose symptoms you are experiencing:", symptoms, key="symptoms")
+        
+        if selected_symptoms:
+            st.markdown("**Selected Symptoms:**")
+            st.write(", ".join(selected_symptoms))
+        else:
+            st.markdown("""
+            <div class='empty-state'>
+                <h3>🩺 Start Your Diagnosis</h3>
+                <p>Select symptoms from the list above to begin your personalized health analysis.</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         predict_btn = st.button("🔍 Predict Disease", type="primary")
     with col3:
-        st.write("")
         reset_btn = st.button("🔄 Reset", on_click=lambda: st.experimental_rerun())
-
-    if predict_btn:
-        if selected_symptoms:
-            with st.spinner("Analyzing your symptoms..."):
-                try:
-                    predicted_disease, confidence = predict_disease_safe(
-                        clf_model,
-                        selected_symptoms,
-                        symptoms,
-                        le_clf
-                    )
-                    progression_stage = predict_progression(reg_model, predicted_disease, le_clf, scaler_reg)
-                except Exception as exc:
-                    st.error("Disease prediction failed. Please try again later.")
-                    st.exception(exc)
-                    predicted_disease = None
-                    confidence = 0.0
-                    progression_stage = np.nan
-
-                if predicted_disease is not None:
-                    col_left, col_right = st.columns(2)
-                    with col_left:
-                        st.success(f"**Predicted Disease:** {predicted_disease}")
-                        st.info(f"**Confidence:** {confidence:.1f}%")
-                    with col_right:
-                        if np.isnan(progression_stage):
-                            st.warning("**Progression Stage:** Unable to estimate reliably")
-                        else:
-                            st.warning(f"**Progression Stage:** {progression_stage:.2f} / 5.0")
-                else:
-                    st.warning("Prediction is not available at this time.")
-
+    
+    if predict_btn and selected_symptoms:
+        with st.spinner("🧠 AI is analyzing your symptoms..."):
+            time.sleep(0.8)  # Add slight delay for realism
+            try:
+                predicted_disease, confidence = predict_disease_safe(
+                    clf_model,
+                    selected_symptoms,
+                    symptoms,
+                    le_clf
+                )
+                progression_stage = predict_progression(reg_model, predicted_disease, le_clf, scaler_reg)
+            except Exception as exc:
+                st.error("Disease prediction failed. Please try again later.")
+                st.exception(exc)
+                predicted_disease = None
+                confidence = 0.0
+                progression_stage = np.nan
+            
+            if predicted_disease is not None:
+                # Personalized greeting
+                st.markdown(f"### 👋 Here's your personalized health analysis, based on {len(selected_symptoms)} symptom{'s' if len(selected_symptoms) > 1 else ''}")
+                
+                # Diagnosis Summary Card
+                st.markdown(f"""
+                <div class='diagnosis-card'>
+                    <h2 style='color: white; margin: 0; font-size: 32px;'>🩺 {predicted_disease}</h2>
+                    <div style='display: flex; justify-content: space-around; margin-top: 20px;'>
+                        <div>
+                            <h3 style='color: #00d4aa; margin: 0;'>📊 Confidence</h3>
+                            <p style='font-size: 24px; margin: 5px 0; color: white;'>{confidence:.1f}%</p>
+                        </div>
+                        <div>
+                            <h3 style='color: #ff6b6b; margin: 0;'>📈 Stage</h3>
+                            <p style='font-size: 24px; margin: 5px 0; color: white;'>{progression_stage:.2f}/5.0</p>
+                        </div>
+                        <div>
+                            <h3 style='color: #ffd93d; margin: 0;'>⚕️ Risk</h3>
+                            <p style='font-size: 18px; margin: 5px 0; color: white;'>{calculate_health_risk_score(confidence)[1]}</p>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Animated Confidence Bar
+                st.markdown("### 📊 Confidence Level")
+                progress_html = f"""
+                <div class='progress-bar'>
+                    <div class='progress-fill' style='width: {confidence}%;'></div>
+                </div>
+                """
+                st.markdown(progress_html, unsafe_allow_html=True)
+                
+                # AI Reasoning Section
+                st.markdown("### 🤖 AI Reasoning")
+                st.markdown(f"""
+                <div class='glass-card'>
+                    <p style='font-size: 16px; line-height: 1.6;'>{generate_ai_reasoning(selected_symptoms, predicted_disease)}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Next Steps Section
+                st.markdown("### 📌 Recommended Next Steps")
+                st.markdown("""
+                <div class='glass-card'>
+                    <ul style='font-size: 16px; line-height: 1.8;'>
+                        <li><strong>Consult a healthcare professional</strong> for accurate diagnosis and treatment</li>
+                        <li><strong>Monitor your symptoms</strong> and track any changes</li>
+                        <li><strong>Follow the precautions below</strong> to manage your condition</li>
+                        <li><strong>Stay hydrated and rest</strong> if experiencing fatigue or weakness</li>
+                    </ul>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Precautions
                 if predicted_disease in precautions:
-                    st.subheader("🛡️ Precautions")
+                    st.markdown("### 🛡️ Precautions")
                     for i, prec in enumerate(precautions[predicted_disease], 1):
                         if pd.notna(prec) and prec:
                             st.write(f"{i}. {prec}")
                 else:
                     st.warning("Please consult a healthcare professional for personalized advice.")
-        else:
-            st.error("Please select at least one symptom.")
+            else:
+                st.warning("Prediction is not available at this time.")
+    elif predict_btn:
+        st.error("Please select at least one symptom.")
 
-with tab2:
-    st.subheader("Top Feature Importance")
+elif selected == "Insights":
+    st.markdown("## 📈 Model Insights")
+    
+    # Top 3 Predictions (if symptoms selected)
+    if st.session_state.get("symptoms"):
+        selected_symptoms = st.session_state["symptoms"]
+        if selected_symptoms:
+            st.markdown("### 🏆 Top 3 Disease Predictions")
+            try:
+                top_predictions = get_top_predictions(clf_model, selected_symptoms, symptoms, le_clf, 3)
+                diseases = [pred[0] for pred in top_predictions]
+                probs = [pred[1] * 100 for pred in top_predictions]
+                
+                fig, ax = plt.subplots(figsize=(10, 6))
+                bars = ax.barh(diseases[::-1], probs[::-1], color=['#1f77b4', '#ff7f0e', '#2ca02c'])
+                ax.set_xlabel('Probability (%)')
+                ax.set_title('Top 3 Disease Predictions')
+                ax.grid(axis='x', alpha=0.2)
+                for bar, prob in zip(bars, probs[::-1]):
+                    ax.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height()/2, f'{prob:.1f}%', 
+                           ha='left', va='center', fontweight='bold')
+                st.pyplot(fig)
+            except Exception:
+                st.info("Top predictions not available for this model configuration.")
+    
+    # Feature Importance
     if hasattr(clf_model, 'feature_importances_'):
+        st.markdown("### 📊 Feature Importance")
         importances = clf_model.feature_importances_
         indices = np.argsort(importances)[::-1][:10]
         top_symptoms = [symptoms[i] for i in indices][::-1]
         top_importances = importances[indices][::-1]
-
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.barh(top_symptoms, top_importances, color='skyblue')
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.barh(top_symptoms, top_importances, color='#1f77b4')
         ax.set_xlabel('Importance')
         ax.set_title('Top 10 Feature Importances')
         ax.grid(axis='x', alpha=0.2)
         st.pyplot(fig)
     else:
         st.info("Feature importance not available for this model.")
+    
+    # Model Statistics
+    st.markdown("### 📊 Model Statistics")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Total Symptoms", len(symptoms))
+    with col2:
+        st.metric("Model Type", "Random Forest" if not isinstance(clf_model, ImprovedModelInference) else "XGBoost")
+
+elif selected == "About":
+    st.markdown("## ℹ️ About MediVault AI")
+    st.markdown("""
+    <div class='glass-card'>
+        <h3>How It Works</h3>
+        <p>This AI system predicts diseases based on symptoms using advanced machine learning models and estimates disease progression stages.</p>
+        <ol>
+            <li>Select symptoms you're experiencing</li>
+            <li>Click 'Predict Disease' to get results</li>
+            <li>View predicted disease, confidence, progression stage, and precautions</li>
+        </ol>
+    </div>
+    <div class='glass-card'>
+        <h3>Model Information</h3>
+        <ul>
+            <li><strong>Classification:</strong> Random Forest or XGBoost ({len(symptoms)} symptoms)</li>
+            <li><strong>Regression:</strong> Random Forest Regressor</li>
+            <li><strong>Features:</strong> Symptom-based prediction with confidence scoring</li>
+        </ul>
+    </div>
+    <div class='glass-card'>
+        <h3>Important Notice</h3>
+        <p style='color: #ff6b6b;'>⚠️ This system is for educational purposes only. Always consult a healthcare professional for medical advice.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Footer
+st.markdown("""
+<div class='footer'>
+    Built with ❤️ using Machine Learning & Streamlit | 👨‍⚕️ Consult a doctor for professional medical advice
+</div>
+""", unsafe_allow_html=True)
