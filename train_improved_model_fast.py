@@ -38,6 +38,20 @@ from imblearn.over_sampling import SMOTE
 warnings.filterwarnings('ignore')
 
 # ============================================================================
+# PATH DEFINITIONS
+# ============================================================================
+
+import os
+
+BASE_DATA_PATH = os.path.join("healthcare-chatbot", "Data")
+DATA_TRAIN_PATH = os.path.join(BASE_DATA_PATH, "Train")
+PROGRESSION_PATH = os.path.join(BASE_DATA_PATH, "Progression", "chronic_disease_progression.csv")
+SUPPORT_PATH = os.path.join(BASE_DATA_PATH, "Support")
+
+print("Working directory:", os.getcwd())
+print("Data path:", os.path.abspath(DATA_TRAIN_PATH))
+
+# ============================================================================
 # STEP 1: LOAD DATA
 # ============================================================================
 
@@ -47,7 +61,13 @@ def load_data():
     print("STEP 1: LOADING DATA")
     print("=" * 70)
     
-    file_path = 'healthcare-chatbot/Data/Training.csv'
+    filename = "Training.csv"
+    file_path = os.path.join(DATA_TRAIN_PATH, filename)
+    
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+    
     df = pd.read_csv(file_path)
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     

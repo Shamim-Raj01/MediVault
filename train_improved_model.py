@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pickle
 import warnings
+import logging
 from pathlib import Path
 
 # Scikit-learn imports
@@ -25,6 +26,7 @@ from sklearn.model_selection import (
     train_test_split, 
     GridSearchCV, 
     cross_val_score,
+    KFold,
     StratifiedKFold,
     cross_validate
 )
@@ -47,42 +49,139 @@ from xgboost import XGBClassifier
 from imblearn.over_sampling import SMOTE
 
 warnings.filterwarnings('ignore')
+logging.basicConfig(level=logging.INFO)
+
+# ============================================================================
+# PATH DEFINITIONS
+# ============================================================================
+
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DATA_PATH = os.getenv(
+    "DATA_PATH",
+    os.path.join(BASE_DIR, "healthcare-chatbot", "Data")
+)
+DATA_TRAIN_PATH = os.path.join(BASE_DATA_PATH, "Train")
+PROGRESSION_PATH = os.path.join(BASE_DATA_PATH, "Progression", "chronic_disease_progression.csv")
+SUPPORT_PATH = os.path.join(BASE_DATA_PATH, "Support")
+
+logging.info(f"Working directory: {os.getcwd()}")
+logging.info(f"Data path: {os.path.abspath(DATA_TRAIN_PATH)}")
 
 # ============================================================================
 # STEP 1: LOAD DATA
 # ============================================================================
 
-def load_data():
+def load_and_clean_datasets():
     """
-    Load classification dataset from CSV.
+    Load and clean all training datasets from DATA_TRAIN_PATH.
+    Handles heterogeneous datasets by standardizing column names and aligning schemas.
+    Concatenates multiple CSV files, removes unnamed columns, validates target column.
     Returns: X (features), y (target), column names
     """
-    print("=" * 70)
-    print("STEP 1: LOADING DATA")
-    print("=" * 70)
+    logging.info("=" * 70)
+    logging.info("LOADING AND CLEANING DATASETS")
+    logging.info("=" * 70)
     
-    file_path = 'healthcare-chatbot/Data/Training.csv'
-    df = pd.read_csv(file_path)
+    datasets = []
+    loaded_files = 0
+    all_columns = set()
     
-    # Remove unnamed columns
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    # Get all CSV files in DATA_TRAIN_PATH
+    if not os.path.exists(DATA_TRAIN_PATH):
+        logging.error(f"Data train path does not exist: {DATA_TRAIN_PATH}")
+        raise FileNotFoundError(f"Data train path not found: {DATA_TRAIN_PATH}")
     
-    # Ensure 'prognosis' column exists
-    if 'prognosis' not in df.columns:
-        raise ValueError("'prognosis' column not found in dataset")
+    for filename in os.listdir(DATA_TRAIN_PATH):
+        if filename.endswith('.csv'):
+            file_path = os.path.join(DATA_TRAIN_PATH, filename)
+            if not os.path.exists(file_path):
+                logging.warning(f"File not found: {file_path}")
+                continue
+            try:
+                df = pd.read_csv(file_path)
+                # Remove unnamed columns
+                df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+                
+                # Standardize column names
+                df.columns = df.columns.str.strip().str.lower()
+                
+                # Check and standardize target column
+                if 'prognosis' in df.columns:
+                    df.rename(columns={'prognosis': 'disease'}, inplace=True)
+                elif 'disease' not in df.columns:
+                    logging.warning(f"No target column ('prognosis' or 'disease') found in {filename}, skipping")
+                    continue
+                
+                # Remove non-symptom columns
+                exclude_keywords = ['_id', 'patient', 'hospital', 'date', 'name']
+                df = df[
+                    [
+                        col for col in df.columns
+                        if col == 'disease' or not any(k in col.lower() for k in exclude_keywords)
+                    ]
+                ]
+                
+                # Collect all feature columns (exclude target)
+                all_columns.update([col for col in df.columns if col != 'disease'])
+                
+                datasets.append(df)
+                loaded_files += 1
+                logging.info(f"✓ Loaded {filename}: {df.shape}")
+            except Exception as e:
+                logging.warning(f"Error loading {filename}: {e}")
+                continue
+    
+    if len(datasets) == 0:
+        raise ValueError("No valid datasets loaded. Check column names and DATA_TRAIN_PATH.")
+    
+    # Align datasets by adding missing columns with 0
+    aligned_datasets = []
+    for df in datasets:
+        for col in all_columns:
+            if col not in df.columns:
+                df[col] = 0
+        aligned_datasets.append(df)
+    
+    # Concatenate all aligned datasets
+    combined_df = pd.concat(aligned_datasets, ignore_index=True)
+    
+    # Remove duplicate columns
+    combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
     
     # Separate features and target
-    X = df.drop('prognosis', axis=1)
-    y = df['prognosis']
+    X = combined_df.drop('disease', axis=1)
+    y = combined_df['disease']
     
-    print(f"✓ Data loaded successfully")
-    print(f"  - Dataset shape: {X.shape}")
-    print(f"  - Number of features (symptoms): {X.shape[1]}")
-    print(f"  - Number of samples: {X.shape[0]}")
-    print(f"  - Number of unique diseases: {y.nunique()}")
-    print(f"  - Class distribution:\n{y.value_counts()}\n")
+    # Ensure all features are numeric
+    X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
     
-    return X, y, X.columns.tolist()
+    # Ensure stable feature order
+    feature_names = sorted(X.columns.tolist())
+    X = X[feature_names]
+    
+    logging.info(f"✓ Combined dataset loaded successfully")
+    logging.info(f"  - Total files loaded: {loaded_files}")
+    logging.info(f"  - Combined dataset shape: {X.shape}")
+    logging.info(f"  - Number of features (symptoms): {X.shape[1]}")
+    logging.info(f"  - Number of samples: {X.shape[0]}")
+    logging.info(f"  - Number of unique diseases: {y.nunique()}")
+    logging.info(f"  - Class distribution:\n{y.value_counts()}\n")
+    
+    return X, y, feature_names
+
+
+def load_data():
+    """
+    Load classification dataset using load_and_clean_datasets().
+    Returns: X (features), y (target), column names
+    """
+    logging.info("=" * 70)
+    logging.info("STEP 1: LOADING DATA")
+    logging.info("=" * 70)
+    
+    return load_and_clean_datasets()
 
 
 # ============================================================================
@@ -96,30 +195,34 @@ def handle_class_imbalance(X_train, y_train):
     
     Returns: Balanced X_train, y_train
     """
-    print("\n" + "=" * 70)
-    print("STEP 2: HANDLING CLASS IMBALANCE WITH SMOTE")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 2: HANDLING CLASS IMBALANCE WITH SMOTE")
+    logging.info("=" * 70)
     
     # Calculate initial class distribution
     unique, counts = np.unique(y_train, return_counts=True)
-    print(f"Before SMOTE:")
-    print(f"  Class distribution: {dict(zip(unique, counts))}")
+    logging.info(f"Before SMOTE:")
+    logging.info(f"  Class distribution: {dict(zip(unique, counts))}")
     
     # Apply SMOTE only if there's class imbalance
     if len(np.unique(y_train)) > 1 and counts.std() > counts.mean() * 0.3:
-        smote = SMOTE(random_state=42, k_neighbors=3)
+        # Calculate minimum class size to determine safe k_neighbors
+        min_class_size = min(counts)
+        k_neighbors = max(1, min(3, min_class_size - 1))
+        
+        smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
         try:
             X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
-            print(f"\nAfter SMOTE:")
+            logging.info(f"\nAfter SMOTE:")
             unique_after, counts_after = np.unique(y_train_balanced, return_counts=True)
-            print(f"  Class distribution: {dict(zip(unique_after, counts_after))}")
-            print(f"  New training set size: {X_train_balanced.shape[0]} (was {X_train.shape[0]})\n")
+            logging.info(f"  Class distribution: {dict(zip(unique_after, counts_after))}")
+            logging.info(f"  New training set size: {X_train_balanced.shape[0]} (was {X_train.shape[0]})\n")
             return X_train_balanced, y_train_balanced
         except Exception as e:
-            print(f"⚠ SMOTE failed: {e}. Using original data.\n")
+            logging.warning(f"⚠ SMOTE failed: {e}. Using original data.\n")
             return X_train, y_train
     else:
-        print(f"  ✓ No significant class imbalance detected. Using original data.\n")
+        logging.info(f"  ✓ No significant class imbalance detected. Using original data.\n")
         return X_train, y_train
 
 
@@ -134,9 +237,9 @@ def engineer_features(X):
     
     This helps the model learn complex symptom relationships.
     """
-    print("\n" + "=" * 70)
-    print("STEP 3: FEATURE ENGINEERING")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 3: FEATURE ENGINEERING")
+    logging.info("=" * 70)
     
     X_engineered = X.copy()
     n_original = X.shape[1]
@@ -155,10 +258,10 @@ def engineer_features(X):
             X_engineered[feature_name] = (X[symptom1] * X[symptom2]).astype(int)
             interaction_count += 1
     
-    print(f"✓ Features engineered successfully")
-    print(f"  - Original features: {n_original}")
-    print(f"  - Interaction features created: {interaction_count}")
-    print(f"  - Total features: {X_engineered.shape[1]}\n")
+    logging.info(f"✓ Features engineered successfully")
+    logging.info(f"  - Original features: {n_original}")
+    logging.info(f"  - Interaction features created: {interaction_count}")
+    logging.info(f"  - Total features: {X_engineered.shape[1]}\n")
     
     return X_engineered
 
@@ -169,13 +272,26 @@ def engineer_features(X):
 
 def preprocess_data(X, y):
     """
-    Encode labels and prepare train/test split with stratification.
+    Filter rare classes first, then encode labels once and prepare
+    the train/test split with stratification.
     """
-    print("\n" + "=" * 70)
-    print("STEP 4: PREPROCESSING DATA")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 4: PREPROCESSING DATA")
+    logging.info("=" * 70)
     
-    # Encode target labels
+    # Filter rare classes before encoding so labels remain contiguous
+    class_counts = y.value_counts()
+    valid_classes = class_counts[class_counts >= 5].index
+    mask = y.isin(valid_classes)
+    X = X[mask]
+    y = y[mask]
+    logging.info(f"  - Removed {len(class_counts) - len(valid_classes)} rare classes (with <2 samples)")
+    
+    # Reset indices to ensure contiguous indexing
+    X = X.reset_index(drop=True)
+    y = y.reset_index(drop=True)
+    
+    # Encode filtered labels once; no remapping is needed later
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
     
@@ -191,29 +307,33 @@ def preprocess_data(X, y):
         stratify=y_encoded  # ← Important: maintains class distribution
     )
     
-    print(f"✓ Data preprocessing complete")
-    print(f"  - Training set: {X_train.shape}")
-    print(f"  - Test set: {X_test.shape}")
-    print(f"  - Total features: {X_train.shape[1]}")
-    print(f"  - Label encoder classes: {le.classes_}\n")
+    logging.info(f"✓ Data preprocessing complete")
+    logging.info(f"  - Training set: {X_train.shape}")
+    logging.info(f"  - Test set: {X_test.shape}")
+    logging.info(f"  - Total features: {X_train.shape[1]}")
+    logging.info(f"  - Label encoder classes: {le.classes_}\n")
     
-    return X_train, X_test, y_train, y_test, le
+    num_classes = len(le.classes_)
+    return X_train, X_test, y_train, y_test, le, num_classes
 
 
 # ============================================================================
 # STEP 5: HYPERPARAMETER TUNING WITH GRIDSEARCHCV
 # ============================================================================
 
-def tune_hyperparameters(X_train, y_train):
+def tune_hyperparameters(X_train, y_train, num_classes):
     """
     Use GridSearchCV to find optimal hyperparameters for XGBoost.
     Searches across multiple parameter combinations using cross-validation.
     """
-    print("\n" + "=" * 70)
-    print("STEP 5: HYPERPARAMETER TUNING WITH GRIDSEARCHCV")
-    print("=" * 70)
-    print("Searching for optimal XGBoost hyperparameters...")
-    print("This may take a minute...\n")
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 5: HYPERPARAMETER TUNING WITH GRIDSEARCHCV")
+    logging.info("=" * 70)
+    logging.info("Searching for optimal XGBoost hyperparameters...")
+    logging.info("This may take a minute...\n")
+    
+    # Fast debug mode flag
+    FAST_MODE = True
     
     # Define XGBoost base model with overfitting prevention constraints
     xgb_base = XGBClassifier(
@@ -221,38 +341,54 @@ def tune_hyperparameters(X_train, y_train):
         n_jobs=-1,  # Use all CPUs
         tree_method='hist',  # Faster training
         device='cpu',
-        objective='multi:softprob'  # Multi-class classification
+        objective='multi:softprob',  # Multi-class classification
+        num_class=num_classes,  # Explicitly define total classes across folds
+        eval_metric='mlogloss',
+        use_label_encoder=False
     )
     
-    # Parameter grid - carefully selected ranges to avoid overfitting
-    # Note: Reduced to balance tuning quality with computation time
-    param_grid = {
-        'n_estimators': [100, 150],                 # Number of boosting rounds
-        'max_depth': [4, 5, 6],                     # Prevent overfitting
-        'learning_rate': [0.05, 0.1],               # Learning rate (eta)
-        'min_child_weight': [1, 3],                 # Min samples per leaf
-        'subsample': [0.8, 0.9],                    # Row subsampling
-        'colsample_bytree': [0.8, 0.9],             # Column subsampling
-    }
+    # Parameter grid - optimized for speed and performance
+    if FAST_MODE:
+        param_grid = {
+            'n_estimators': [100],                   # Single value for fast testing
+            'max_depth': [4],                        # Single value for fast testing
+            'learning_rate': [0.1]                   # Single value for fast testing
+        }
+        cv_folds = 2  # Reduced CV folds for speed
+        logging.info("FAST_MODE enabled: Using minimal parameter grid and 2-fold CV\n")
+    else:
+        param_grid = {
+            'n_estimators': [100, 200],              # Number of boosting rounds
+            'max_depth': [4, 6],                     # Prevent overfitting
+            'learning_rate': [0.05, 0.1]             # Learning rate (eta)
+        }
+        cv_folds = 3  # Full CV folds
+        logging.info("FULL_MODE: Using complete parameter grid and 3-fold CV\n")
     
-    # GridSearchCV with 5-fold cross-validation
+    cv = StratifiedKFold(
+        n_splits=cv_folds,
+        shuffle=True,
+        random_state=42
+    )
+
+    # GridSearchCV with stratified folds to preserve class balance
     grid_search = GridSearchCV(
         estimator=xgb_base,
         param_grid=param_grid,
-        cv=5,  # 5-fold cross-validation
+        cv=cv,
         scoring='accuracy',
-        n_jobs=-1,
-        verbose=1,
-        error_score=0
+        n_jobs=-1,  # Use all available cores
+        verbose=1,  # Show progress
+        error_score='raise'
     )
     
     # Fit grid search
     grid_search.fit(X_train, y_train)
     
-    print(f"\n✓ Hyperparameter tuning complete")
-    print(f"  - Best parameters: {grid_search.best_params_}")
-    print(f"  - Best CV accuracy: {grid_search.best_score_:.4f}")
-    print(f"  - Total combinations tested: {len(grid_search.cv_results_['params'])}\n")
+    logging.info(f"\n✓ Hyperparameter tuning complete")
+    logging.info(f"  - Best parameters: {grid_search.best_params_}")
+    logging.info(f"  - Best CV accuracy: {grid_search.best_score_:.4f}")
+    logging.info(f"  - Total combinations tested: {len(grid_search.cv_results_['params'])}\n")
     
     return grid_search.best_estimator_
 
@@ -266,9 +402,9 @@ def evaluate_with_cross_validation(model, X_train, y_train):
     Evaluate model using cross-validation to ensure robustness.
     Returns mean accuracy and standard deviation across folds.
     """
-    print("\n" + "=" * 70)
-    print("STEP 6: CROSS-VALIDATION EVALUATION")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 6: CROSS-VALIDATION EVALUATION")
+    logging.info("=" * 70)
     
     # Stratified K-Fold ensures class balance in each fold
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -290,18 +426,18 @@ def evaluate_with_cross_validation(model, X_train, y_train):
     )
     
     # Print results for each fold
-    print("Cross-validation results (5-fold Stratified):\n")
+    logging.info("Cross-validation results (5-fold Stratified):\n")
     for fold_idx in range(5):
-        print(f"Fold {fold_idx + 1}:")
-        print(f"  Train Accuracy: {cv_results['train_accuracy'][fold_idx]:.4f}")
-        print(f"  Test Accuracy:  {cv_results['test_accuracy'][fold_idx]:.4f}")
-        print(f"  Test F1 (weighted): {cv_results['test_f1_weighted'][fold_idx]:.4f}")
+        logging.info(f"Fold {fold_idx + 1}:")
+        logging.info(f"  Train Accuracy: {cv_results['train_accuracy'][fold_idx]:.4f}")
+        logging.info(f"  Test Accuracy:  {cv_results['test_accuracy'][fold_idx]:.4f}")
+        logging.info(f"  Test F1 (weighted): {cv_results['test_f1_weighted'][fold_idx]:.4f}")
     
     # Summary statistics
-    print(f"\nSummary Statistics:")
-    print(f"  Mean CV Accuracy: {cv_results['test_accuracy'].mean():.4f} "
+    logging.info(f"\nSummary Statistics:")
+    logging.info(f"  Mean CV Accuracy: {cv_results['test_accuracy'].mean():.4f} "
           f"(±{cv_results['test_accuracy'].std():.4f})")
-    print(f"  Mean CV F1 Score: {cv_results['test_f1_weighted'].mean():.4f} "
+    logging.info(f"  Mean CV F1 Score: {cv_results['test_f1_weighted'].mean():.4f} "
           f"(±{cv_results['test_f1_weighted'].std():.4f})\n")
     
     return cv_results
@@ -318,9 +454,9 @@ def calibrate_model(model, X_train, y_train):
     
     This is critical for disease prediction where probability thresholds matter.
     """
-    print("\n" + "=" * 70)
-    print("STEP 7: PROBABILITY CALIBRATION")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 7: PROBABILITY CALIBRATION")
+    logging.info("=" * 70)
     
     # CalibratedClassifierCV wraps the model and calibrates probabilities
     calibrated_model = CalibratedClassifierCV(
@@ -331,10 +467,10 @@ def calibrate_model(model, X_train, y_train):
     
     calibrated_model.fit(X_train, y_train)
     
-    print(f"✓ Model calibrated successfully")
-    print(f"  - Calibration method: sigmoid")
-    print(f"  - CV folds for calibration: 5")
-    print(f"  - Ensures realistic probability estimates\n")
+    logging.info(f"✓ Model calibrated successfully")
+    logging.info(f"  - Calibration method: sigmoid")
+    logging.info(f"  - CV folds for calibration: 5")
+    logging.info(f"  - Ensures realistic probability estimates\n")
     
     return calibrated_model
 
@@ -348,9 +484,9 @@ def evaluate_model(model, X_train, y_train, X_test, y_test, le, model_name="Mode
     Comprehensive evaluation using multiple metrics.
     Returns detailed performance metrics.
     """
-    print("\n" + "=" * 70)
-    print(f"STEP 8: COMPREHENSIVE EVALUATION - {model_name}")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info(f"STEP 8: COMPREHENSIVE EVALUATION - {model_name}")
+    logging.info("=" * 70)
     
     # Predictions
     y_pred_train = model.predict(X_train)
@@ -364,38 +500,39 @@ def evaluate_model(model, X_train, y_train, X_test, y_test, le, model_name="Mode
     train_accuracy = accuracy_score(y_train, y_pred_train)
     test_accuracy = accuracy_score(y_test, y_pred_test)
     
-    print(f"\n>>> ACCURACY METRICS")
-    print(f"  Training Accuracy: {train_accuracy:.4f}")
-    print(f"  Test Accuracy:     {test_accuracy:.4f}")
+    logging.info(f"\n>>> ACCURACY METRICS")
+    logging.info(f"  Training Accuracy: {train_accuracy:.4f}")
+    logging.info(f"  Test Accuracy:     {test_accuracy:.4f}")
     
     # Check for overfitting
     overfitting_gap = train_accuracy - test_accuracy
     if overfitting_gap > 0.1:
-        print(f"  ⚠ Warning: Possible overfitting detected (gap: {overfitting_gap:.4f})")
+        logging.warning(f"  ⚠ Warning: Possible overfitting detected (gap: {overfitting_gap:.4f})")
     else:
-        print(f"  ✓ Generalization gap is acceptable ({overfitting_gap:.4f})")
+        logging.info(f"  ✓ Generalization gap is acceptable ({overfitting_gap:.4f})")
     
     # F1 Score (handles class imbalance better than accuracy)
     f1_weighted = f1_score(y_test, y_pred_test, average='weighted')
     f1_macro = f1_score(y_test, y_pred_test, average='macro')
     
-    print(f"\n>>> F1 SCORES (Better for imbalanced data)")
-    print(f"  F1 Score (Weighted): {f1_weighted:.4f}")
-    print(f"  F1 Score (Macro):    {f1_macro:.4f}")
+    logging.info(f"\n>>> F1 SCORES (Better for imbalanced data)")
+    logging.info(f"  F1 Score (Weighted): {f1_weighted:.4f}")
+    logging.info(f"  F1 Score (Macro):    {f1_macro:.4f}")
     
     # Classification Report (per-class metrics)
-    print(f"\n>>> CLASSIFICATION REPORT (Detailed per-class metrics)")
-    print(classification_report(
+    logging.info(f"\n>>> CLASSIFICATION REPORT (Detailed per-class metrics)")
+    report = classification_report(
         y_test, 
         y_pred_test,
         target_names=le.classes_,
         digits=4
-    ))
+    )
+    logging.info(f"\n{report}")
     
     # Confusion Matrix
-    print(f"\n>>> CONFUSION MATRIX")
+    logging.info(f"\n>>> CONFUSION MATRIX")
     cm = confusion_matrix(y_test, y_pred_test)
-    print(cm)
+    logging.info(f"{cm}")
     
     # Plot confusion matrix
     plt.figure(figsize=(12, 10))
@@ -413,25 +550,25 @@ def evaluate_model(model, X_train, y_train, X_test, y_test, le, model_name="Mode
     plt.ylabel('Actual Disease')
     plt.tight_layout()
     plt.savefig('confusion_matrix_improved.png', dpi=300, bbox_inches='tight')
-    print(f"\n  ✓ Confusion matrix saved as 'confusion_matrix_improved.png'")
+    logging.info(f"\n  ✓ Confusion matrix saved as 'confusion_matrix_improved.png'")
     plt.close()
     
     # ROC-AUC for multi-class (one-vs-rest)
     if len(le.classes_) > 2:
         try:
             roc_auc = roc_auc_score(y_test, y_pred_proba_test, multi_class='ovr', average='weighted')
-            print(f"\n>>> ROC-AUC SCORE (One-vs-Rest)")
-            print(f"  ROC-AUC (Weighted): {roc_auc:.4f}")
+            logging.info(f"\n>>> ROC-AUC SCORE (One-vs-Rest)")
+            logging.info(f"  ROC-AUC (Weighted): {roc_auc:.4f}")
         except Exception as e:
-            print(f"\n>>> ROC-AUC SCORE: Could not compute ({e})")
+            logging.warning(f"\n>>> ROC-AUC SCORE: Could not compute ({e})")
     
     # Probability calibration check
-    print(f"\n>>> PROBABILITY CALIBRATION CHECK")
+    logging.info(f"\n>>> PROBABILITY CALIBRATION CHECK")
     avg_proba = y_pred_proba_test.max(axis=1).mean()
-    print(f"  Average max predicted probability: {avg_proba:.4f}")
-    print(f"  (Closer to test accuracy {test_accuracy:.4f} = better calibration)")
+    logging.info(f"  Average max predicted probability: {avg_proba:.4f}")
+    logging.info(f"  (Closer to test accuracy {test_accuracy:.4f} = better calibration)")
     
-    print()
+    logging.info("")
     return {
         'train_accuracy': train_accuracy,
         'test_accuracy': test_accuracy,
@@ -449,9 +586,9 @@ def save_models(model, le, feature_names, output_dir='.'):
     """
     Save the trained model, label encoder, and feature names for inference.
     """
-    print("\n" + "=" * 70)
-    print("STEP 9: SAVING MODELS")
-    print("=" * 70)
+    logging.info("\n" + "=" * 70)
+    logging.info("STEP 9: SAVING MODELS")
+    logging.info("=" * 70)
     
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
@@ -460,21 +597,21 @@ def save_models(model, le, feature_names, output_dir='.'):
     model_path = output_dir / 'model_improved.pkl'
     with open(model_path, 'wb') as f:
         pickle.dump(model, f)
-    print(f"✓ Model saved: {model_path}")
+    logging.info(f"✓ Model saved: {model_path}")
     
     # Save label encoder
     le_path = output_dir / 'le_classification_improved.pkl'
     with open(le_path, 'wb') as f:
         pickle.dump(le, f)
-    print(f"✓ Label encoder saved: {le_path}")
+    logging.info(f"✓ Label encoder saved: {le_path}")
     
     # Save feature names (important for inference)
     features_path = output_dir / 'feature_names_improved.pkl'
     with open(features_path, 'wb') as f:
         pickle.dump(feature_names, f)
-    print(f"✓ Feature names saved: {features_path}")
+    logging.info(f"✓ Feature names saved: {features_path}")
     
-    print()
+    logging.info("")
 
 
 # ============================================================================
@@ -485,32 +622,32 @@ def main():
     """
     Main training pipeline orchestrating all steps.
     """
-    print("\n")
-    print("#" * 70)
-    print("# IMPROVED DISEASE PREDICTION MODEL TRAINING PIPELINE")
-    print("#" * 70)
-    print("# Using Best Practices:")
-    print("#  • XGBoost: More powerful gradient boosting")
-    print("#  • GridSearchCV: Systematic hyperparameter tuning")
-    print("#  • Cross-validation: Robust evaluation")
-    print("#  • SMOTE: Handle class imbalance")
-    print("#  • Feature Engineering: Create meaningful interactions")
-    print("#  • Calibration: Realistic probability estimates")
-    print("#  • Comprehensive Metrics: Not just accuracy")
-    print("#" * 70 + "\n")
+    logging.info("\n")
+    logging.info("#" * 70)
+    logging.info("# IMPROVED DISEASE PREDICTION MODEL TRAINING PIPELINE")
+    logging.info("#" * 70)
+    logging.info("# Using Best Practices:")
+    logging.info("#  • XGBoost: More powerful gradient boosting")
+    logging.info("#  • GridSearchCV: Systematic hyperparameter tuning")
+    logging.info("#  • Cross-validation: Robust evaluation")
+    logging.info("#  • SMOTE: Handle class imbalance")
+    logging.info("#  • Feature Engineering: Create meaningful interactions")
+    logging.info("#  • Calibration: Realistic probability estimates")
+    logging.info("#  • Comprehensive Metrics: Not just accuracy")
+    logging.info("#" * 70 + "\n")
     
     # Step 1: Load data
     X, y, feature_names = load_data()
     
     # Step 4: Preprocess
-    X_train, X_test, y_train, y_test, le = preprocess_data(X, y)
+    X_train, X_test, y_train, y_test, le, num_classes = preprocess_data(X, y)
     
     # Step 2: Handle class imbalance
     X_train_balanced, y_train_balanced = handle_class_imbalance(X_train, y_train)
     
     # Step 5: Hyperparameter tuning
-    print("Training base XGBoost model for hyperparameter tuning...")
-    best_model = tune_hyperparameters(X_train_balanced, y_train_balanced)
+    logging.info("Training base XGBoost model for hyperparameter tuning...")
+    best_model = tune_hyperparameters(X_train_balanced, y_train_balanced, num_classes)
     
     # Step 6: Cross-validation
     cv_results = evaluate_with_cross_validation(best_model, X_train_balanced, y_train_balanced)
@@ -533,18 +670,18 @@ def main():
     save_models(calibrated_model, le, feature_names)
     
     # Final summary
-    print("\n" + "=" * 70)
-    print("TRAINING PIPELINE COMPLETE!")
-    print("=" * 70)
-    print(f"\n✓ Model successfully trained and saved")
-    print(f"  - Test Accuracy: {metrics['test_accuracy']:.4f}")
-    print(f"  - F1 Score (Weighted): {metrics['f1_weighted']:.4f}")
-    print(f"  - Model type: Calibrated XGBoost")
-    print(f"\n✓ Files saved:")
-    print(f"  - model_improved.pkl (trained model)")
-    print(f"  - le_classification_improved.pkl (label encoder)")
-    print(f"  - feature_names_improved.pkl (feature names)")
-    print(f"  - confusion_matrix_improved.png (evaluation visualization)\n")
+    logging.info("\n" + "=" * 70)
+    logging.info("TRAINING PIPELINE COMPLETE!")
+    logging.info("=" * 70)
+    logging.info(f"\n✓ Model successfully trained and saved")
+    logging.info(f"  - Test Accuracy: {metrics['test_accuracy']:.4f}")
+    logging.info(f"  - F1 Score (Weighted): {metrics['f1_weighted']:.4f}")
+    logging.info(f"  - Model type: Calibrated XGBoost")
+    logging.info(f"\n✓ Files saved:")
+    logging.info(f"  - model_improved.pkl (trained model)")
+    logging.info(f"  - le_classification_improved.pkl (label encoder)")
+    logging.info(f"  - feature_names_improved.pkl (feature names)")
+    logging.info(f"  - confusion_matrix_improved.png (evaluation visualization)\n")
 
 
 if __name__ == "__main__":

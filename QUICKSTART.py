@@ -39,15 +39,20 @@ for f in files_needed:
 # pip install -r requirements.txt
 
 # ============================================================================
-# STEP 3: UPDATE app.py (2 minutes)
+# PATH DEFINITIONS
 # ============================================================================
 
-# ADD IMPORT at top of app.py:
-"""
-from inference_improved_model import ImprovedModelInference
-"""
+import os
 
-# REPLACE the load_models() function:
+BASE_DATA_PATH = os.path.join("healthcare-chatbot", "Data")
+DATA_TRAIN_PATH = os.path.join(BASE_DATA_PATH, "Train")
+PROGRESSION_PATH = os.path.join(BASE_DATA_PATH, "Progression", "chronic_disease_progression.csv")
+SUPPORT_PATH = os.path.join(BASE_DATA_PATH, "Support")
+
+print("Working directory:", os.getcwd())
+print("Data path:", os.path.abspath(DATA_TRAIN_PATH))
+
+# ─── Load Model ───
 
 # OLD CODE:
 """
@@ -144,7 +149,14 @@ model = load_model()
 # ─── Load Symptoms ───
 @st.cache_data
 def load_symptoms():
-    df = pd.read_csv('healthcare-chatbot/Data/Training.csv')
+    filename = "Training.csv"
+    file_path = os.path.join(DATA_TRAIN_PATH, filename)
+    
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+    
+    df = pd.read_csv(file_path)
     return [col for col in df.columns if col != 'prognosis']
 
 all_symptoms = load_symptoms()

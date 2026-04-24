@@ -9,11 +9,25 @@ from sklearn.model_selection import cross_val_score
 from sklearn.svm import SVC
 import csv
 import warnings
+import os
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# ============================================================================
+# PATH DEFINITIONS
+# ============================================================================
 
-training = pd.read_csv('Data/Training.csv')
-testing= pd.read_csv('Data/Testing.csv')
+script_dir = os.path.dirname(os.path.abspath(__file__))
+BASE_DATA_PATH = os.path.join(script_dir, "Data")
+DATA_TRAIN_PATH = os.path.join(BASE_DATA_PATH, "Train")
+PROGRESSION_PATH = os.path.join(BASE_DATA_PATH, "Progression", "chronic_disease_progression.csv")
+SUPPORT_PATH = os.path.join(BASE_DATA_PATH, "Support")
+MASTER_DATA_PATH = os.path.join(script_dir, "MasterData")
+
+print("Working directory:", os.getcwd())
+print("Data path:", os.path.abspath(BASE_DATA_PATH))
+
+training = pd.read_csv(os.path.join(DATA_TRAIN_PATH, 'Training.csv'))
+testing= pd.read_csv(os.path.join(BASE_DATA_PATH, 'Testing.csv'))
 cols= training.columns
 cols= cols[:-1]
 x = training[cols]
@@ -84,7 +98,11 @@ def calc_condition(exp,days):
 
 def getDescription():
     global description_list
-    with open('MasterData/symptom_Description.csv') as csv_file:
+    desc_path = os.path.join(MASTER_DATA_PATH, 'symptom_Description.csv')
+    if not os.path.exists(desc_path):
+        print(f"File not found: {desc_path}")
+        return
+    with open(desc_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         line_count = 0
         for row in csv_reader:
@@ -96,7 +114,11 @@ def getDescription():
 
 def getSeverityDict():
     global severityDictionary
-    with open('MasterData/symptom_severity.csv') as csv_file:
+    sev_path = os.path.join(MASTER_DATA_PATH, 'symptom_severity.csv')
+    if not os.path.exists(sev_path):
+        print(f"File not found: {sev_path}")
+        return
+    with open(sev_path) as csv_file:
 
         csv_reader = csv.reader(csv_file, delimiter=',')
         line_count = 0
@@ -110,7 +132,11 @@ def getSeverityDict():
 
 def getprecautionDict():
     global precautionDictionary
-    with open('MasterData/symptom_precaution.csv') as csv_file:
+    prec_path = os.path.join(MASTER_DATA_PATH, 'symptom_precaution.csv')
+    if not os.path.exists(prec_path):
+        print(f"File not found: {prec_path}")
+        return
+    with open(prec_path) as csv_file:
 
         csv_reader = csv.reader(csv_file, delimiter=',')
         line_count = 0
@@ -136,7 +162,11 @@ def check_pattern(dis_list,inp):
     else:
         return 0,[]
 def sec_predict(symptoms_exp):
-    df = pd.read_csv('Data/Training.csv')
+    train_path = os.path.join(DATA_TRAIN_PATH, 'Training.csv')
+    if not os.path.exists(train_path):
+        print(f"File not found: {train_path}")
+        return None
+    df = pd.read_csv(train_path)
     X = df.iloc[:, :-1]
     y = df['prognosis']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=20)

@@ -445,7 +445,7 @@ For issues with:
 - **Model training**: See train_improved_model_fast.py comments
 - **Inference**: See inference_improved_model.py docstrings
 - **Integration**: See INTEGRATION_GUIDE.py examples
-- **Data**: Check healthcare-chatbot/Data/ folder
+- **Data**: Check Data/Train/ folder
 
 ---
 
