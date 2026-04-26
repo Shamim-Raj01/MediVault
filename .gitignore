@@ -1,3 +1,19 @@
+# Data
+*.csv
+!healthcare-chatbot/Data/Support/*.csv
+
+# Models
+*.pkl
+!model_improved.pkl
+!le_classification_improved.pkl
+!feature_names_improved.pkl
+
+# Images (optional large outputs)
+*.png
+*.zip
+
+# Cache
+__pycache__/
+
+# Virtual env
 .venv/
-**pycache**/
-*.pyc

@@ -1,8 +1,9 @@
 from pathlib import Path
+from collections import Counter
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, classification_report, f1_score
 
 
 MODEL_METRICS = {"old_accuracy": 75, "new_accuracy": 98}
@@ -54,6 +55,10 @@ def compute_real_metrics(model, X_test, y_test):
     }
 
 
+def get_predictions(model, X_test):
+    return model.predict(X_test)
+
+
 def render_comparison_chart():
     comparison = pd.DataFrame(
         {
@@ -95,6 +100,158 @@ def render_confusion_matrix():
         st.info("Confusion matrix image not found in the project directory.")
 
 
+def decode_labels(values, label_encoder):
+    try:
+        numeric_values = np.asarray(values).astype(int)
+        return label_encoder.inverse_transform(numeric_values)
+    except Exception:
+        return np.asarray(values)
+
+
+def get_analysis_feature_names(feature_names, model_feature_names, X_test):
+    if X_test is None:
+        return feature_names
+    if len(model_feature_names) == X_test.shape[1]:
+        return model_feature_names
+    if len(feature_names) == X_test.shape[1]:
+        return feature_names
+    return model_feature_names[: X_test.shape[1]]
+
+
+def format_feature_list(names):
+    return ", ".join(str(name).replace("_", " ").title() for name in names if str(name).strip())
+
+
+def render_top_confused_pairs(y_true, y_pred, label_encoder):
+    decoded_true = decode_labels(y_true, label_encoder)
+    decoded_pred = decode_labels(y_pred, label_encoder)
+    confusion_pairs = [
+        (decoded_true[i], decoded_pred[i])
+        for i in range(len(decoded_true))
+        if decoded_true[i] != decoded_pred[i]
+    ]
+
+    st.subheader("Most Confused Disease Pairs")
+    top_pairs = Counter(confusion_pairs).most_common(10)
+    if not top_pairs:
+        st.info("No confused pairs found in the available validation data.")
+        return None, decoded_true, decoded_pred
+
+    df = pd.DataFrame(top_pairs, columns=["pair", "count"])
+    df["Actual"] = df["pair"].apply(lambda x: x[0])
+    df["Predicted"] = df["pair"].apply(lambda x: x[1])
+    df = df.drop(columns=["pair"])
+
+    total_errors = sum(count for _, count in top_pairs)
+    df["Error %"] = (df["count"] / total_errors * 100).round(2)
+    df["Actual -> Predicted"] = df["Actual"] + " -> " + df["Predicted"]
+
+    selected = st.selectbox("Focus on disease", ["All"] + sorted(df["Actual"].unique().tolist()))
+    filtered_df = df if selected == "All" else df[df["Actual"] == selected]
+
+    if filtered_df.empty:
+        st.info("No confused pairs found for the selected disease.")
+        return None, decoded_true, decoded_pred
+
+    worst = filtered_df.iloc[0]
+    st.warning(
+        f"Most confusion: {worst['Actual']} -> {worst['Predicted']} "
+        f"({worst['Error %']}%)"
+    )
+
+    st.dataframe(
+        filtered_df[["Actual", "Predicted", "count", "Error %"]],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.bar_chart(
+        filtered_df.set_index("Actual -> Predicted")["count"],
+        use_container_width=True,
+    )
+    st.caption(
+        "These pairs indicate diseases with overlapping symptoms. "
+        "Improving feature separation or adding more data can reduce these errors."
+    )
+    return worst, decoded_true, decoded_pred
+
+
+def analyze_confusion_pair(X_test, y_true, actual_label, predicted_label, analysis_feature_names):
+    idx_actual = [i for i in range(len(y_true)) if y_true[i] == actual_label]
+    idx_predicted = [i for i in range(len(y_true)) if y_true[i] == predicted_label]
+    if not idx_actual or not idx_predicted:
+        return None
+
+    mean_actual = np.mean(X_test[idx_actual], axis=0)
+    mean_predicted = np.mean(X_test[idx_predicted], axis=0)
+    overlap = np.minimum(mean_actual, mean_predicted)
+    difference = np.abs(mean_actual - mean_predicted)
+
+    top_overlap_idx = np.argsort(overlap)[-5:][::-1]
+    top_diff_idx = np.argsort(difference)[-5:][::-1]
+
+    return {
+        "shared_symptoms": [analysis_feature_names[i] for i in top_overlap_idx if overlap[i] > 0],
+        "differentiating_symptoms": [analysis_feature_names[i] for i in top_diff_idx if difference[i] > 0],
+        "overlap_score": float(np.mean(overlap[top_overlap_idx])) if len(top_overlap_idx) else 0.0,
+    }
+
+
+def render_recommendations(decoded_true, decoded_pred, worst_pair, pair_analysis):
+    recommendations = []
+    total_samples = len(decoded_true)
+    total_errors = int(np.sum(decoded_true != decoded_pred))
+    error_rate = (total_errors / total_samples) if total_samples else 0.0
+
+    class_counts = pd.Series(decoded_true).value_counts()
+    min_count = int(class_counts.min()) if not class_counts.empty else 0
+    max_count = int(class_counts.max()) if not class_counts.empty else 0
+    imbalance_ratio = (max_count / max(min_count, 1)) if max_count else 0.0
+
+    if pair_analysis and pair_analysis["overlap_score"] >= 0.4:
+        recommendations.append("Add more distinctive features or symptom questions to separate overlapping diseases.")
+    if imbalance_ratio >= 2.0:
+        recommendations.append("Increase samples for underrepresented classes to reduce imbalance-driven confusion.")
+    if error_rate >= 0.15:
+        recommendations.append("Consider hierarchical classification to separate broad disease families before fine-grained prediction.")
+    if worst_pair is not None and not recommendations:
+        recommendations.append("Review the top confused disease pair and add targeted training examples around its differentiating symptoms.")
+
+    with st.expander("How to improve model"):
+        st.subheader("Recommended Improvements")
+        for item in recommendations:
+            st.markdown(f"- {item}")
+
+
+def render_class_performance(y_true, y_pred):
+    report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+    class_rows = []
+    for cls, stats in report.items():
+        if not isinstance(stats, dict) or "f1-score" not in stats:
+            continue
+        class_rows.append(
+            {
+                "Class": cls,
+                "Precision": round(stats["precision"], 3),
+                "Recall": round(stats["recall"], 3),
+                "F1": round(stats["f1-score"], 3),
+                "Support": int(stats["support"]),
+            }
+        )
+
+    if not class_rows:
+        return
+
+    df = pd.DataFrame(class_rows).sort_values("F1")
+    with st.expander("Per-class diagnostics"):
+        st.subheader("Per-Class Performance")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        weak_classes = df.head(5)
+        st.warning("Weakest performing diseases:")
+        for _, row in weak_classes.iterrows():
+            st.write(f"{row['Class']} (F1: {row['F1']:.2f})")
+
+
 def get_feature_importance_frame(model, feature_names):
     base_model = getattr(model, "estimator", model)
     importances = getattr(base_model, "feature_importances_", None)
@@ -129,9 +286,11 @@ def render(context):
     X_test, y_test, metrics_path = load_validation_data()
 
     real_metrics = None
+    y_pred = None
     if X_test is not None and y_test is not None:
         try:
             real_metrics = compute_real_metrics(model, X_test, y_test)
+            y_pred = get_predictions(model, X_test)
         except Exception as exc:
             print(f"[DEBUG] Failed to compute validation metrics: {exc}")
 
@@ -241,6 +400,40 @@ def render(context):
         )
         st.dataframe(snapshot, use_container_width=True, hide_index=True)
 
-    st.write("")
     st.subheader("Confusion Matrix")
-    render_confusion_matrix()
+    top_confusion_pair = None
+    decoded_true = None
+    decoded_pred = None
+    if dynamic_metrics["classes"] > 20:
+        st.info("Confusion matrix hidden due to large number of classes")
+        if y_pred is not None:
+            top_confusion_pair, decoded_true, decoded_pred = render_top_confused_pairs(y_test, y_pred, label_encoder)
+    else:
+        render_confusion_matrix()
+        if y_pred is not None:
+            top_confusion_pair, decoded_true, decoded_pred = render_top_confused_pairs(y_test, y_pred, label_encoder)
+
+    if y_pred is not None and decoded_true is not None and decoded_pred is not None:
+        analysis_feature_names = get_analysis_feature_names(feature_names, model_feature_names, X_test)
+        pair_analysis = None
+        if top_confusion_pair is not None and X_test is not None:
+            pair_analysis = analyze_confusion_pair(
+                X_test,
+                decoded_true,
+                top_confusion_pair["Actual"],
+                top_confusion_pair["Predicted"],
+                analysis_feature_names,
+            )
+
+        with st.expander("Why confusion happens"):
+            if pair_analysis is None:
+                st.info("Not enough data is available to analyze symptom overlap for the top confusion pair.")
+            else:
+                st.subheader("Why these diseases are confused")
+                shared_symptoms = format_feature_list(pair_analysis["shared_symptoms"])
+                differentiating_symptoms = format_feature_list(pair_analysis["differentiating_symptoms"])
+                st.write("Shared symptoms:", shared_symptoms or "Information not available")
+                st.write("Key differentiating symptoms:", differentiating_symptoms or "Information not available")
+
+        render_recommendations(decoded_true, decoded_pred, top_confusion_pair, pair_analysis)
+        render_class_performance(decoded_true, decoded_pred)

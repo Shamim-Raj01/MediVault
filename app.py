@@ -145,7 +145,7 @@ def inject_styles():
 
 
 @st.cache_resource
-def load_artifacts():
+def load_model_artifacts():
     model_path = Path("model_improved.pkl")
     label_encoder_path = Path("le_classification_improved.pkl")
     feature_names_path = Path("feature_names_improved.pkl")
@@ -176,13 +176,26 @@ def load_artifacts():
     print(f"[DEBUG] feature_names length: {len(feature_names)}")
     print(f"[DEBUG] model feature_names_in_ length: {len(model_feature_names)}")
 
-    return {
-        "model": model,
-        "label_encoder": label_encoder,
-        "feature_names": feature_names,
-        "model_feature_names": model_feature_names,
-        "expected_feature_count": expected_feature_count,
-    }
+    return model, label_encoder, feature_names, model_feature_names, expected_feature_count
+
+
+@st.cache_resource
+def build_feature_index(feature_names):
+    return {str(feature): idx for idx, feature in enumerate(feature_names)}
+
+
+@st.cache_resource
+def build_interaction_index(feature_names):
+    interaction_index = {}
+    for idx, feature_name in enumerate(feature_names):
+        if "_and_" in feature_name:
+            left, right = feature_name.split("_and_", 1)
+        elif "_x_" in feature_name:
+            left, right = feature_name.split("_x_", 1)
+        else:
+            continue
+        interaction_index[(left, right)] = idx
+    return interaction_index
 
 
 def render_sidebar() -> str:
@@ -218,7 +231,16 @@ def main():
     inject_styles()
 
     try:
-        context = load_artifacts()
+        model, label_encoder, feature_names, model_feature_names, expected_feature_count = load_model_artifacts()
+        context = {
+            "model": model,
+            "label_encoder": label_encoder,
+            "feature_names": feature_names,
+            "model_feature_names": model_feature_names,
+            "expected_feature_count": expected_feature_count,
+            "feature_index": build_feature_index(model_feature_names),
+            "interaction_index": build_interaction_index(model_feature_names),
+        }
     except Exception as exc:
         st.error(f"Failed to load model files: {exc}")
         st.stop()
