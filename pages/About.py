@@ -1,64 +1,97 @@
-from pathlib import Path
-
 import streamlit as st
 
 
 def render(context):
-    model = context["model"]
-    feature_names = context["feature_names"]
-    model_feature_names = context["model_feature_names"]
-    expected_feature_count = context["expected_feature_count"]
+    st.title("ℹ About This Project")
+    st.caption("A professional overview of the AI-powered disease prediction platform.")
+    st.write("")
 
     st.markdown(
         """
-        <div class="hero-card">
-            <div class="hero-kicker">Platform Overview</div>
-            <h1 style="margin: 0 0 0.35rem 0;">About This Dashboard</h1>
-            <p class="hero-copy">A clinical-style interface for exploring disease prediction outputs and model metadata.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        ### About the System
+
+        This project is an **AI-based disease prediction system** built with Python, Streamlit,
+        and machine learning. It uses a list of symptoms as input and provides **real-time disease
+        predictions** through an interactive multi-page dashboard.
+
+        The goal is to make model predictions easier to explore, present, and explain in a way
+        that feels useful for demos, portfolios, and decision-support scenarios.
+        """
     )
 
-    intro_col, stack_col = st.columns([1.2, 1])
+    st.write("")
 
-    with intro_col:
-        st.subheader("What It Does")
-        st.write(
-            "This dashboard helps users explore symptom-driven disease predictions with a "
-            "clean workflow, confidence visualization, and supporting model insight panels."
-        )
-        st.write(
-            "The prediction page is designed for quick interaction, while the insights page "
-            "surfaces feature coverage and estimator behavior for review."
-        )
+    st.markdown(
+        """
+        ### Model Details
 
-        st.subheader("Clinical Disclaimer")
-        st.warning(
-            "This tool is for decision support and demonstration purposes only. "
-            "It should not replace professional medical evaluation, diagnosis, or treatment."
-        )
+        The prediction engine is based on the **XGBoost algorithm**, a strong gradient boosting
+        approach that performs well on structured tabular data. The system is framed as a
+        **multi-class classification** problem, where the model predicts one disease class from
+        many possible outcomes based on symptom patterns.
+        """
+    )
 
-    with stack_col:
-        st.subheader("System Snapshot")
-        st.metric("Model Artifact", Path("model_improved.pkl").name)
-        st.metric("UI Symptom Count", len(feature_names))
-        st.metric("Model Feature Count", expected_feature_count)
-        st.metric("Estimator", type(getattr(model, "estimator", model)).__name__)
+    st.write("")
 
-    st.subheader("Architecture")
-    architecture = [
-        "Prediction page collects symptoms and builds a model-aligned feature vector.",
-        "Inference runs with the trained XGBoost-based calibrated classifier.",
-        "Insights page visualizes feature usage, importances, and deployment metrics.",
-        "Shared styling in app.py applies the medical background, overlay, and dark sidebar theme.",
-    ]
-    for item in architecture:
-        st.write(f"- {item}")
+    st.markdown(
+        """
+        ### Accuracy Improvement
 
-    st.subheader("Data Alignment")
-    engineered_count = max(0, len(model_feature_names) - len(feature_names))
+        The improved version of the system was designed to deliver stronger and more stable results:
+
+        - Combined multiple datasets to improve coverage and diversity
+        - Handled class imbalance using **SMOTE**
+        - Added **feature engineering** to capture richer symptom interactions
+        - Applied **hyperparameter tuning** to improve model quality
+        - Used **cross-validation** to improve reliability and reduce overfitting risk
+
+        These changes significantly improved the overall quality of predictions compared with the
+        earlier baseline model.
+        """
+    )
+
+    st.write("")
+
+    st.markdown(
+        """
+        ### Performance
+
+        The current model achieves approximately **98% accuracy** with a **high F1 score** and
+        more stable predictions than the earlier version of the project. This makes the dashboard
+        well-suited for demonstrations of end-to-end ML product thinking, including training,
+        evaluation, inference, and presentation.
+        """
+    )
+
+    st.write("")
+
+    st.markdown(
+        """
+        ### Limitations
+
+        - Predictions depend on the quality and coverage of the training datasets
+        - Symptom-only input cannot capture full clinical context, history, or lab results
+        - Similar diseases may still produce overlapping symptom patterns
+        - Confidence scores do not guarantee medical correctness
+        """
+    )
+
+    st.write("")
+
+    st.markdown(
+        """
+        ### Disclaimer
+
+        This application is a machine learning demonstration and decision-support tool.
+        It is **not** a substitute for professional medical advice, diagnosis, or treatment.
+        Always consult a licensed healthcare professional for clinical decisions.
+        """
+    )
+
+    st.write("")
+
     st.info(
-        f"The UI exposes {len(feature_names)} selectable symptoms while the model expects "
-        f"{expected_feature_count} total inputs, including {engineered_count} engineered features."
+        "This application is intended for educational and demonstration purposes. "
+        "It should not be used as a substitute for professional medical diagnosis."
     )

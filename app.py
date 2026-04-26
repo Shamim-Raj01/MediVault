@@ -10,7 +10,7 @@ from pages import About, Insights, Prediction
 
 
 st.set_page_config(
-    page_title="AI Medical Dashboard",
+    page_title="AI Disease Predictor",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded",

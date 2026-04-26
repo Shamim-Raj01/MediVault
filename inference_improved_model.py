@@ -11,6 +11,59 @@ import pandas as pd
 from pathlib import Path
 from typing import Tuple, List
 
+CONFIDENCE_WARNING_THRESHOLD = 0.4
+MIN_SYMPTOMS_REQUIRED = 3
+CRITICAL_SYMPTOM_WEIGHTS = {
+    "fever": 1.2,
+    "breathlessness": 1.5,
+    "shortness_of_breath": 1.5,
+    "difficulty_breathing": 1.5,
+    "difficulty_in_breathing": 1.5,
+    "chest_pain": 1.5,
+    "sharp_chest_pain": 1.5,
+    "chest_tightness": 1.4,
+    "irregular_heartbeat": 1.4,
+    "palpitations": 1.3,
+    "vomiting_blood": 1.6,
+    "blood_in_stool": 1.5,
+    "blood_in_urine": 1.5,
+    "seizures": 1.6,
+    "fainting": 1.5,
+    "weakness": 1.2,
+    "focal_weakness": 1.4,
+    "yellowish_skin": 1.3,
+}
+
+SYMPTOM_MAP = {
+    "fever": "fever",
+    "high_fever": "fever",
+    "mild_fever": "fever",
+    "skin_rash": "rash",
+    "abnormal_appearing_skin": "rash",
+    "skin_lesion": "rash",
+    "shortness_of_breath": "breathlessness",
+    "difficulty_breathing": "breathlessness",
+    "difficulty_in_breathing": "breathlessness",
+    "nasal_congestion": "congestion",
+    "sinus_congestion": "congestion",
+    "coryza": "runny_nose",
+    "diarrhea": "diarrhoea",
+    "painful_urination": "burning_micturition",
+    "frequent_urination": "polyuria",
+    "yellow_skin": "yellowish_skin",
+    "yellowing_skin": "yellowish_skin",
+    "jaundice": "yellowish_skin",
+    "feeling_ill": "malaise",
+    "sharp_abdominal_pain": "abdominal_pain",
+    "upper_abdominal_pain": "abdominal_pain",
+    "lower_abdominal_pain": "abdominal_pain",
+    "belly_pain": "abdominal_pain",
+    "stomach_pain": "abdominal_pain",
+    "throat_irritation": "sore_throat",
+    "patches_in_throat": "sore_throat",
+    "watering_from_eyes": "lacrimation",
+}
+
 class ImprovedModelInference:
     """
     Wrapper for loading and using the improved calibrated model.
@@ -39,28 +92,50 @@ class ImprovedModelInference:
                 return pickle.load(f)
         except FileNotFoundError:
             raise FileNotFoundError(f"{name} not found at {path}. Run train_improved_model.py first.")
-    
+
+    @staticmethod
+    def normalize_token(text: str) -> str:
+        text = str(text).strip().lower()
+        text = text.replace("&", " and ")
+        text = text.replace("/", " ")
+        text = text.replace("-", " ")
+        text = text.replace(",", " ")
+        text = text.replace("(", " ").replace(")", " ")
+        return "_".join(text.split())
+
+    def normalize_symptom_name(self, symptom: str) -> str:
+        normalized = self.normalize_token(symptom)
+        return SYMPTOM_MAP.get(normalized, normalized)
+
+    @staticmethod
+    def build_confidence_warning(confidence: float) -> str | None:
+        if confidence < CONFIDENCE_WARNING_THRESHOLD:
+            return (
+                "Warning: low-confidence prediction. Add more distinguishing symptoms "
+                "and consider clinical review."
+            )
+        return None
+
     def engineer_features(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Apply the same feature engineering used during training.
-        Creates interaction features from top symptoms.
+        Creates the interaction features referenced by the saved feature set.
         """
         X_engineered = X.copy()
-        
-        # Get original feature count
-        n_original = X.shape[1]
-        
-        # Get top symptoms by variance (same as training)
-        top_symptoms = X.var().nlargest(10).index.tolist()
-        
-        # Create interaction features (limited)
-        for i in range(len(top_symptoms)):
-            for j in range(i + 1, min(i + 3, len(top_symptoms))):
-                symptom1 = top_symptoms[i]
-                symptom2 = top_symptoms[j]
-                feature_name = f"{symptom1}_and_{symptom2}"
-                X_engineered[feature_name] = (X[symptom1] * X[symptom2]).astype(int)
-        
+
+        interaction_features = [
+            name for name in self.feature_names
+            if "_and_" in name or "_x_" in name
+        ]
+        for feature_name in interaction_features:
+            if "_and_" in feature_name:
+                symptom1, symptom2 = feature_name.split("_and_", 1)
+            else:
+                symptom1, symptom2 = feature_name.split("_x_", 1)
+            left = X_engineered.get(symptom1, pd.Series(0, index=X_engineered.index))
+            right = X_engineered.get(symptom2, pd.Series(0, index=X_engineered.index))
+            X_engineered[feature_name] = left * right
+
         return X_engineered
     
     def predict_disease(
@@ -69,7 +144,7 @@ class ImprovedModelInference:
         all_symptoms: List[str]
     ) -> Tuple[str, float]:
         """
-        Predict disease from list of symptoms.
+        Return the top-ranked disease from the primary Top-3 output.
         
         Args:
             symptoms: List of symptom names present
@@ -80,14 +155,21 @@ class ImprovedModelInference:
             - predicted_disease: str, name of predicted disease
             - confidence_score: float, probability between 0-1
         """
+        if len(symptoms) < MIN_SYMPTOMS_REQUIRED:
+            raise ValueError(
+                f"At least {MIN_SYMPTOMS_REQUIRED} symptoms are required for prediction."
+            )
+
         input_vector = pd.DataFrame(
             np.zeros((1, len(all_symptoms))),
-            columns=all_symptoms
+            columns=[self.normalize_symptom_name(symptom) for symptom in all_symptoms]
         )
+        input_vector = input_vector.groupby(level=0, axis=1).max()
 
         for symptom in symptoms:
-            if symptom in all_symptoms:
-                input_vector[symptom] = 1
+            normalized_symptom = self.normalize_symptom_name(symptom)
+            if normalized_symptom in input_vector.columns:
+                input_vector[normalized_symptom] = CRITICAL_SYMPTOM_WEIGHTS.get(normalized_symptom, 1.0)
 
         input_engineered = self.engineer_features(input_vector)
 
@@ -111,14 +193,9 @@ class ImprovedModelInference:
         else:
             input_final = input_engineered
 
-        # Make prediction with error handling
         try:
-            prediction_encoded = self.model.predict(input_final)[0]
-            disease = self.label_encoder.inverse_transform([prediction_encoded])[0]
-            
-            probabilities = self.model.predict_proba(input_final)[0]
-            confidence = np.max(probabilities)
-            
+            top_predictions = self.get_top_predictions(symptoms, all_symptoms, top_k=3)
+            disease, confidence = top_predictions[0]
             return disease, float(confidence)
         except Exception as e:
             print("Prediction error:", str(e))
@@ -149,11 +226,10 @@ class ImprovedModelInference:
         self,
         symptoms: List[str],
         all_symptoms: List[str],
-        top_k: int = 5
+        top_k: int = 3
     ) -> List[Tuple[str, float]]:
         """
-        Get top-K disease predictions with probabilities.
-        Useful for showing alternative diagnoses.
+        Get Top-K disease predictions sorted by probability descending.
         
         Args:
             symptoms: List of symptom names present
@@ -164,14 +240,21 @@ class ImprovedModelInference:
             List of (disease, probability) sorted by probability descending
         """
         # Create feature vector
+        if len(symptoms) < MIN_SYMPTOMS_REQUIRED:
+            raise ValueError(
+                f"At least {MIN_SYMPTOMS_REQUIRED} symptoms are required for prediction."
+            )
+
         input_vector = pd.DataFrame(
             np.zeros((1, len(all_symptoms))),
-            columns=all_symptoms
+            columns=[self.normalize_symptom_name(symptom) for symptom in all_symptoms]
         )
+        input_vector = input_vector.groupby(level=0, axis=1).max()
         
         for symptom in symptoms:
-            if symptom in all_symptoms:
-                input_vector[symptom] = 1
+            normalized_symptom = self.normalize_symptom_name(symptom)
+            if normalized_symptom in input_vector.columns:
+                input_vector[normalized_symptom] = CRITICAL_SYMPTOM_WEIGHTS.get(normalized_symptom, 1.0)
         
         # Apply feature engineering
         input_engineered = self.engineer_features(input_vector)
@@ -225,13 +308,16 @@ def predict_with_improved_model(symptoms: List[str], all_symptoms: List[str]) ->
         }
     """
     model = ImprovedModelInference()
-    disease, confidence = model.predict_disease(symptoms, all_symptoms)
-    alternatives = model.get_top_predictions(symptoms, all_symptoms, top_k=3)
+    top_predictions = model.get_top_predictions(symptoms, all_symptoms, top_k=3)
+    disease, confidence = top_predictions[0]
+    warning = model.build_confidence_warning(confidence)
     
     return {
+        'top_predictions': top_predictions,
         'disease': disease,
         'confidence': confidence,
-        'alternatives': alternatives
+        'alternatives': top_predictions[1:],
+        'warning': warning
     }
 
 
